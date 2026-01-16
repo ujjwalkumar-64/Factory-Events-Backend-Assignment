@@ -10,11 +10,9 @@ public record StatsRequest(
         @NotBlank(message = "machine id is required")
         String machineId,
         @NotNull(message = "start event time is required")
-        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'" , timezone = "UTC")
         Instant start,
 
         @NotNull(message = "end event time is required")
-        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'" , timezone = "UTC")
         Instant end
 ) {
 }
