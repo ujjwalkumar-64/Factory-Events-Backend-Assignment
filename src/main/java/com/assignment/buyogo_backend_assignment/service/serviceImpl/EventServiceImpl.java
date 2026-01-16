@@ -2,15 +2,14 @@ package com.assignment.buyogo_backend_assignment.service.serviceImpl;
 
 import com.assignment.buyogo_backend_assignment.entity.Event;
 import com.assignment.buyogo_backend_assignment.exception.ValidationException;
+import com.assignment.buyogo_backend_assignment.repository.EventBulkRepository;
 import com.assignment.buyogo_backend_assignment.repository.EventRepository;
 import com.assignment.buyogo_backend_assignment.request.EventRequest;
 import com.assignment.buyogo_backend_assignment.response.BatchResponse;
 import com.assignment.buyogo_backend_assignment.response.RejectionDetail;
 import com.assignment.buyogo_backend_assignment.service.EventService;
-
 import com.assignment.buyogo_backend_assignment.util.EventPayloadHashUtil;
 import lombok.RequiredArgsConstructor;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,9 +19,10 @@ import java.util.*;
 
 @Service
 @RequiredArgsConstructor
-
 public class EventServiceImpl implements EventService {
+
     private final EventRepository eventRepository;
+    private final EventBulkRepository eventBulkRepository;
 
     private static final long MAX_DURATION_MS = 21_600_000L; // 6 hours
     private static final long MAX_FUTURE_MINUTES = 15;
@@ -37,93 +37,88 @@ public class EventServiceImpl implements EventService {
 
         List<RejectionDetail> rejections = new ArrayList<>();
 
-        // Optimization: prefetch existing events in one go (reduces DB calls)
+        // 1) Collect valid events
+        List<Event> validEvents = new ArrayList<>();
         Set<String> eventIds = new HashSet<>();
+
         for (EventRequest req : eventRequests) {
-            if (req != null && req.eventId() != null) {
-                eventIds.add(req.eventId());
-            }
-        }
-
-        Map<String, Event> existingMap = new HashMap<>();
-        if (!eventIds.isEmpty()) {
-            List<Event> existingEvents = eventRepository.findByEventIdIn(new ArrayList<>(eventIds));
-
-            for (Event e : existingEvents) {
-                existingMap.put(e.getEventId(), e);
-            }
-        }
-
-        for (EventRequest eventRequest : eventRequests) {
             try {
-                validateEvent(eventRequest);
+                validateEvent(req);
 
-                Instant receivedTime = Instant.now(); // set by backend
-                String payloadHash = EventPayloadHashUtil.computeHash(eventRequest);
+                Instant receivedTime = Instant.now(); // backend sets
+                String payloadHash = EventPayloadHashUtil.computeHash(req);
 
-                Event existing = existingMap.get(eventRequest.eventId());
+                Event e = Event.builder()
+                        .eventId(req.eventId())
+                        .eventTime(req.eventTime())
+                        .receivedTime(receivedTime)
+                        .machineId(req.machineId())
+                        .durationMs(req.durationMs())
+                        .defectCount(req.defectCount())
+                        .factoryId(req.factoryId())
+                        .lineId(req.lineId())
+                        .payloadHash(payloadHash)
+                        .build();
 
-                if (existing == null) {
-                    // Try insert via upsert. If some other thread inserted, this will become dedupe/update correctly.
-                    int affected = eventRepository.upsertEvent(
-                            eventRequest.eventId(),
-                            eventRequest.eventTime(),
-                            receivedTime,
-                            eventRequest.machineId(),
-                            eventRequest.durationMs(),
-                            eventRequest.defectCount(),
-                            eventRequest.factoryId(),
-                            eventRequest.lineId(),
-                            payloadHash
-                    );
+                validEvents.add(e);
+                eventIds.add(req.eventId());
 
-                    if (affected == 1) {
-                        // Could be insert or update; since we had no existing in map, treat as accepted
-                        accepted++;
-                    } else {
-                        deduped++;
-                    }
-                } else {
-                    // Existing known -> decide dedupe or update using payloadHash + receivedTime
-                    if (Objects.equals(existing.getPayloadHash(), payloadHash)) {
-                        deduped++;
-                    } else {
-                        // Use DB atomic upsert update rule
-                        int affected = eventRepository.upsertEvent(
-                                eventRequest.eventId(),
-                                eventRequest.eventTime(),
-                                receivedTime,
-                                eventRequest.machineId(),
-                                eventRequest.durationMs(),
-                                eventRequest.defectCount(),
-                                eventRequest.factoryId(),
-                                eventRequest.lineId(),
-                                payloadHash
-                        );
-
-                        if (affected == 1 && receivedTime.isAfter(existing.getReceivedTime())) {
-                            updated++;
-                            // Update local map to avoid wrong classification later in same batch
-                            existing.setPayloadHash(payloadHash);
-                            existing.setReceivedTime(receivedTime);
-                        } else {
-                            deduped++;
-                        }
-                    }
-                }
-
-            } catch (ValidationException e) {
+            } catch (ValidationException ve) {
                 rejected++;
                 rejections.add(RejectionDetail.builder()
-                        .eventId(eventRequest != null ? eventRequest.eventId() : null)
-                        .reason(e.getMessage())
+                        .eventId(req != null ? req.eventId() : null)
+                        .reason(ve.getMessage())
                         .build());
             } catch (Exception e) {
                 rejected++;
                 rejections.add(RejectionDetail.builder()
-                        .eventId(eventRequest != null ? eventRequest.eventId() : null)
+                        .eventId(req != null ? req.eventId() : null)
                         .reason("Unexpected error: " + e.getMessage())
                         .build());
+            }
+        }
+
+        if (validEvents.isEmpty()) {
+            return BatchResponse.builder()
+                    .accepted(accepted)
+                    .deduped(deduped)
+                    .updated(updated)
+                    .rejected(rejected)
+                    .rejections(rejections)
+                    .build();
+        }
+
+        // 2) Prefetch existing events for classification (only needed rows)
+        Map<String, Event> existingMap = new HashMap<>();
+        List<Event> existingEvents = eventRepository.findByEventIdIn(new ArrayList<>(eventIds));
+        for (Event ex : existingEvents) {
+            existingMap.put(ex.getEventId(), ex);
+        }
+
+        // 3) Bulk upsert (FAST)
+        int[] results = eventBulkRepository.bulkUpsert(validEvents);
+
+        // 4) Count accepted / updated / deduped
+        // NOTE: results[i] is usually 1 if insert/update happened, 0 if no-op
+        for (int i = 0; i < validEvents.size(); i++) {
+            Event incoming = validEvents.get(i);
+            Event existing = existingMap.get(incoming.getEventId());
+
+            if (existing == null) {
+                // was not in DB at prefetch time => likely insert
+                accepted++;
+            } else {
+                // existed already
+                if (Objects.equals(existing.getPayloadHash(), incoming.getPayloadHash())) {
+                    deduped++;
+                } else {
+                    // payload differs -> update may happen only if incoming receivedTime newer
+                    if (incoming.getReceivedTime().isAfter(existing.getReceivedTime()) && results[i] > 0) {
+                        updated++;
+                    } else {
+                        deduped++;
+                    }
+                }
             }
         }
 
@@ -157,5 +152,3 @@ public class EventServiceImpl implements EventService {
         }
     }
 }
-
-
