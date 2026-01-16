@@ -2,6 +2,20 @@ spring:
   application:
     name: Buyogo_Backend_Assignment
 
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    hibernate:
+      ddl-auto: update
+
+    show-sql: true
+    properties:
+      hibernate:
+      format_sql: true
+
+  datasource:
+    url: jdbc:postgresql://localhost:5435/factory
+    username: factory_user
+    password: factory_pass
 
 server:
   port: 8092

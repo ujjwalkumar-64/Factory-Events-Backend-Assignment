@@ -1,0 +1,37 @@
+services:
+  postgres-db:
+    image: postgres:15
+    container_name: factory-event-app
+    restart: always
+    environment:
+      POSTGRES_USER: factory_user
+      POSTGRES_PASSWORD: factory_pass
+      POSTGRES_DB: factory
+    ports:
+      - "5435:5432"
+    volumes:
+      - factory-event-data:/var/lib/postgresql/data
+    networks:
+      - factory-event-app
+
+  pgadmin:
+    image: dpage/pgadmin4
+    restart: always
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    networks:
+      - factory-event-app
+
+
+volumes:
+  factory-event-data:
+  pgadmin-data:
+
+networks:
+  factory-event-app:
+    driver: bridge
