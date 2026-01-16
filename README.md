@@ -252,12 +252,3 @@ concurrency safety
 
 ---
 
-# ✅ What to do now (fast checklist)
-1. Create `README.md` in repo root  
-2. Paste above content  
-3. Commit + push
-
----
-
-If you want, I can also provide **BENCHMARK.md** and **DESIGN.md** quickly (extra bonus), but README alone is mandatory and this one is fully compliant and strong.
-::contentReference[oaicite:0]{index=0}
