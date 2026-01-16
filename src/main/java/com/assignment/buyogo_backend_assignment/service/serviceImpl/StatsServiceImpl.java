@@ -8,6 +8,7 @@ import com.assignment.buyogo_backend_assignment.response.Status;
 import com.assignment.buyogo_backend_assignment.service.StatsService;
 import lombok.AllArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -24,6 +25,7 @@ public class StatsServiceImpl implements StatsService {
 
     @Override
     public StatsResponse getStats(StatsRequest statsRequest){
+
         long eventsCount = eventRepository.countByMachineIdAndEventTimeBetween(
                 statsRequest.machineId(),
                 statsRequest.start(),

@@ -119,7 +119,7 @@ public class EventServiceImpl implements EventService {
     private void validateEvent(EventRequest eventRequest){
 
         // reject if eventTime is > 15 minutes in the future
-        if(eventRequest.eventTime().isAfter(Instant.now().plus(Duration.ofMinutes(MAX_DURATION_MS)))){
+        if(eventRequest.eventTime().isAfter(Instant.now().plus(Duration.ofMinutes(MAX_FUTURE_MINUTES)))){
             throw new ValidationException(
                     String.format("eventTime is more than %d minutes in the future", MAX_FUTURE_MINUTES)
             );
