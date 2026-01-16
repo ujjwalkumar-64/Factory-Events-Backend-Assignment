@@ -12,5 +12,5 @@ import java.util.List;
 @Service
 public interface EventService {
     BatchResponse processBatchEvents(List<EventRequest> eventRequest);
-    StatsResponse getStats(StatsRequest statsRequest);
+
 }

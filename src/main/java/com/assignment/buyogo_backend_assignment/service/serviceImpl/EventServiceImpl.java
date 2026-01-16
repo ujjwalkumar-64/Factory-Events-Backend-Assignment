@@ -4,11 +4,8 @@ import com.assignment.buyogo_backend_assignment.entity.Event;
 import com.assignment.buyogo_backend_assignment.exception.ValidationException;
 import com.assignment.buyogo_backend_assignment.repository.EventRepository;
 import com.assignment.buyogo_backend_assignment.request.EventRequest;
-import com.assignment.buyogo_backend_assignment.request.StatsRequest;
 import com.assignment.buyogo_backend_assignment.response.BatchResponse;
 import com.assignment.buyogo_backend_assignment.response.RejectionDetail;
-import com.assignment.buyogo_backend_assignment.response.StatsResponse;
-import com.assignment.buyogo_backend_assignment.response.Status;
 import com.assignment.buyogo_backend_assignment.service.EventService;
 
 import com.assignment.buyogo_backend_assignment.util.EventPayloadHashUtil;
@@ -30,7 +27,6 @@ public class EventServiceImpl implements EventService {
     private final EventRepository eventRepository;
     private static final long MAX_DURATION_MS = 21_600_000L; // 6 hours
     private static final long MAX_FUTURE_MINUTES = 15;
-    private static final double HEALTHY_DEFECT_RATE_THRESHOLD = 2.0;
 
     @Override
     @Transactional
@@ -119,40 +115,6 @@ public class EventServiceImpl implements EventService {
                 .rejections(rejections)
                 .build();
     }
-
-    @Override
-    public StatsResponse getStats(StatsRequest statsRequest){
-        long eventsCount = eventRepository.countByMachineIdAndEventTimeBetween(
-                statsRequest.machineId(),
-                statsRequest.start(),
-                statsRequest.end()
-        );
-
-        long defectsCount = eventRepository.sumDefectsByMachineIdAndEventTimeBetween(
-                statsRequest.machineId(),
-                statsRequest.start(),
-                statsRequest.end()
-        );
-
-        double windowHours = Duration.between(statsRequest.start(), statsRequest.end()).toSeconds() / 3600.0;
-        double avgDefectRate= windowHours >0 ? defectsCount/windowHours : 0.0;
-
-        Status status =  avgDefectRate < HEALTHY_DEFECT_RATE_THRESHOLD ? Status.Healthy :Status.Warning;
-
-
-        return StatsResponse.builder()
-                .eventsCount(eventsCount)
-                .defectsCount(defectsCount)
-                .avgDefectRate(avgDefectRate)
-                .end(statsRequest.end())
-                .start(statsRequest.start())
-                .machineId(statsRequest.machineId())
-                .status(status)
-                .build();
-    }
-
-
-
 
     private void validateEvent(EventRequest eventRequest){
 
