@@ -1,0 +1,8 @@
+spring:
+  application:
+    name: Buyogo_Backend_Assignment
+
+
+server:
+  port: 8092
+
