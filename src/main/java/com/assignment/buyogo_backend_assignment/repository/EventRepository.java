@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 @Repository
@@ -26,4 +27,15 @@ public interface EventRepository extends JpaRepository<Event, Long> {
             @Param("machineId") String machineId,
             @Param("start") Instant start,
             @Param("end") Instant end);
+
+    @Query("SELECT e.lineId as lineId, COALESCE(SUM(e.defectCount), 0) as totalDefects, " +
+            "COUNT(e) as eventCount FROM Event e " +
+            "WHERE e.factoryId = :factoryId AND e.eventTime >= :from AND e.eventTime < :to " +
+            "AND e.defectCount >= 0 AND e.lineId IS NOT NULL " +
+            "GROUP BY e.lineId ORDER BY totalDefects DESC")
+    List<Object[]> findTopDefectLinesByFactoryIdAndEventTimeBetween(
+            @Param("factoryId") String factoryId,
+            @Param("from") Instant from,
+            @Param("to") Instant to
+    );
 }
