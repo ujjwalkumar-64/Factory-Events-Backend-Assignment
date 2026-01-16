@@ -1,159 +1,161 @@
-# Factory Events Backend Assignment (Buyogo)
+# Factory Machine Events Backend (Buyogo Assignment)
 
-A high-throughput backend service for ingesting factory telemetry events in batches, supporting **deduplication**, **conditional updates**, and **analytics queries** on stored events.
+A production-grade Spring Boot backend for ingesting factory machine events at high throughput, supporting **deduplication**, **conditional update**, and **analytics APIs** using PostgreSQL.
 
-This project focuses on:
-- Correctness under concurrency (thread-safe dedupe/update)
-- High ingestion performance (1000 events < 1 sec)
-- Query endpoints for stats and defect analytics
-- Documentation + Swagger
+This project is optimized to meet the assignment performance requirement:
+✅ **1000 events ingestion < 1 second**
 
 ---
 
-## ✅ Tech Stack
-- Java 17
-- Spring Boot
-- PostgreSQL
-- Spring Data JPA (queries) + JDBC Batch (fast ingestion)
-- Swagger OpenAPI (`springdoc-openapi`)
+## ⚡ Performance Highlights
+
+- **Benchmark target**: 1000 events < 1 second ✅ PASSED
+- **High-throughput ingestion** using JDBC batch UPSERT
+- **Thread-safe ingestion** via PostgreSQL atomic `ON CONFLICT`
+- **Fast payload comparison** via SHA-256 `payloadHash`
+- Swagger/OpenAPI enabled
 
 ---
 
-## 1) Architecture
+## Table of Contents
+- [Architecture](#architecture)
+- [Data Model](#data-model)
+- [Deduplication & Update Logic](#deduplication--update-logic)
+- [Thread Safety](#thread-safety)
+- [Performance Strategy](#performance-strategy)
+- [API Endpoints](#api-endpoints)
+- [Swagger UI](#swagger-ui)
+- [Setup & Run](#setup--run)
+- [Benchmark](#benchmark)
+- [Tests](#tests)
 
-### High-level components
-Client/Sensor ---> REST API (Spring Boot Controllers)
-|
-v
+---
+
+## Architecture
+
+Layered Spring Boot architecture:
+
+```
+Client/Sensor
+    |
+    v
+REST Controllers
+(EventController, StatsController)
+    |
+    v
 Service Layer
-(validation + hashing +
-dedupe/update policy)
-|
-v
-Repository Layer (DB interaction)
-- JPA for fetch/stat queries
-- JDBC batch for high throughput UPSERT
-|
-v
-PostgreSQL Database
-
+(validation + hashing + dedupe/update)
+    |
+    v
+Repository Layer
+EventRepository (JPA queries)
+EventBulkRepository (JdbcTemplate batch upsert)
+    |
+    v
+PostgreSQL
+```
 
 ### Why this architecture?
-- **Controller Layer**: receives HTTP requests, maps JSON to DTOs.
-- **Service Layer**: contains all business rules:
-  - event validation
-  - payload hashing
-  - dedupe/update decisions
-  - bulk ingestion
-- **Repository Layer**:
-  - `EventRepository` (JPA) for querying / stats
-  - `EventBulkRepository` (JdbcTemplate) for bulk upsert
-- **Database**:
-  - PostgreSQL is used because the assignment requires strong UPSERT/constraint semantics and concurrency correctness.
+- Controllers handle request/response only
+- Business rules stay inside Service layer
+- DB access isolated in repositories
+- Enables independent optimization of ingestion vs analytics queries
 
 ---
 
-## 2) Data Model
+## Data Model
 
-Each event contains:
-- `eventId` (unique id, used for dedupe/update)
-- `eventTime` (time when event occurred)
-- `receivedTime` (set by backend when request is processed)
+### Event Entity (core)
+Stores the latest record per `eventId`.
+
+Important fields:
+- `eventId` (unique identifier, used for dedupe/update)
+- `eventTime` (event occurrence time, used for time-window queries)
+- `receivedTime` (set by backend for ordering & conflict resolution)
 - `machineId`
 - `durationMs`
 - `defectCount`
-- `factoryId`
-- `lineId`
-- `payloadHash` (computed by backend from payload fields)
-
-### Unique constraint
-`event_id` is unique in DB.
-
-This ensures:
-- no duplicates
-- correct concurrent behavior
+- `factoryId`, `lineId`
+- `payloadHash` (SHA-256 of event payload)
 
 ---
 
-## 3) Dedupe / Update Logic (Core Requirement)
+## Deduplication & Update Logic
 
-### What is dedupe?
-If the same `eventId` arrives multiple times with the same payload, it should not create multiple DB rows. It should be counted as **deduped**.
+### Payload comparison using hash
+To compare payloads efficiently, the service computes:
 
-### What is an update?
-If the same `eventId` arrives again but with a different payload, we update the stored event **only if** the new event is the latest one.
+`payloadHash = SHA-256(payload fields...)`
 
----
+If two events have the same `payloadHash`, they are treated as identical payloads.
 
-### 3.1 How payloads are compared (Payload Hash)
+### Rules (core requirement)
 
-Instead of comparing multiple fields directly every time, the service computes:
+For an incoming event with `eventId`:
 
-`payloadHash = SHA-256(machineId + durationMs + defectCount + factoryId + lineId + eventTime)`
+1) **New eventId**  
+   → Insert → **accepted**
 
-So:
-- Same payload → same hash
-- Different payload → different hash
+2) **Same eventId + same payloadHash**  
+   → Ignore → **deduped**
 
-This makes dedupe comparison extremely fast:
-- compare `payloadHash` strings, not multiple fields
+3) **Same eventId + different payloadHash**  
+   → Update ONLY if this event has **newer receivedTime**  
+   → else ignore (stale update) → **deduped**
 
----
-
-### 3.2 Who wins? ("winning record" decision)
-
-Each incoming request does NOT provide `receivedTime`.
-Backend sets it using:
-
-`receivedTime = Instant.now()`
-
-This means the backend controls ordering.
-
-**Winning record rule:**
-If two events have same `eventId` but different payload:
-- The event with **newer receivedTime** wins
-- Older events are ignored (counted as deduped)
+### “Winning record”
+Backend assigns `receivedTime = Instant.now()`.  
+This ensures deterministic ordering (avoids client clock skew).
 
 ---
 
-### 3.3 Atomic + Thread-safe implementation in PostgreSQL
+## Thread Safety
 
-This logic is enforced at DB-level using atomic UPSERT:
+Concurrency correctness is guaranteed at DB level using PostgreSQL atomic UPSERT:
 
 ```sql
 INSERT INTO events(...)
-VALUES (...)
+VALUES(...)
 ON CONFLICT (event_id)
 DO UPDATE SET ...
 WHERE
   events.payload_hash <> EXCLUDED.payload_hash
   AND EXCLUDED.received_time > events.received_time;
+This ensures:
 
-This guarantees:
-✅ no duplicates
-✅ correct update ordering under concurrency
-✅ safe even when multiple threads ingest same eventId simultaneously
+no duplicate inserts under race conditions
 
-This is critical because in distributed environments multiple sensors/clients may send the same event concurrently.
+consistent latest-write-wins behavior
 
-4) Validation Rules
+no app-level locks required
 
-For each event:
+## Performance Strategy
 
-Reject if eventTime is > 15 minutes in the future
+### Problem with naive approach
+Per-event SELECT + INSERT/UPDATE causes too many DB round trips.
 
-Reject if durationMs < 0 or durationMs > 6 hours
+![Before Optimisation](docs/images/before-optimisation.png)
 
-Invalid events are counted under rejected with rejection reasons.
+### Optimizations implemented
+✅ Prefetch existing events
 
-5) API Endpoints
-5.1 Batch ingest events
+Collect incoming eventIds
 
+Fetch existing records using WHERE event_id IN (...)
+
+✅ JDBC batch UPSERT
+
+Uses JdbcTemplate.batchUpdate(...)
+
+Minimizes DB round trips significantly
+
+![1st Optimisation](docs/images/1st-optimisation.png)
+
+## API Endpoints
+1) Batch Ingestion
 POST /api/v1/events/batch
 
-Accepts JSON array of events.
-
-Response includes:
+Response:
 
 accepted
 
@@ -165,90 +167,85 @@ rejected
 
 rejections[]
 
-5.2 Machine Stats
-
+2) Machine Stats
 GET /api/v1/stats?machineId=...&start=...&end=...
 
-Returns metrics for a machine in time window:
+Note: defectCount = -1 is ignored during defect aggregation as required.
 
-event count
-
-total defects (ignores defectCount = -1)
-
-average defect rate
-
-health status
-
-5.3 Top Defect Lines
-
+3) Top Defect Lines
 GET /api/v1/stats/top-defect-lines?factoryId=...&start=...&end=...&limit=...
 
-Returns list ordered by total defects:
+## Swagger UI
 
-lineId
-
-eventCount
-
-totalDefects
-
-defectsPercent
-
-6) Swagger API Documentation
-
-After running the application:
+Swagger UI is enabled at:
 
 http://localhost:8092/swagger-ui/index.html
 
-7) How to Run
-7.1 Start PostgreSQL (Docker)
+![Swagger UI](docs/images/swagger.png)
+
+## Setup & Run
+Prerequisites
+Java 17
+
+Docker + Docker Compose
+
+Run PostgreSQL
+```bash
 docker compose up -d
-
-7.2 Run application
+```
+Run application
+```bash
 ./mvnw spring-boot:run
+```
+App runs at:
+http://localhost:8092
 
-8) Benchmark (Performance Requirement)
+---
 
-Benchmark runner is integrated and can be executed using:
+## Benchmark
 
+Run benchmark mode:
+
+```bash
 ./mvnw spring-boot:run -Dspring-boot.run.arguments="--benchmark"
+```
 
-Latest benchmark results
+Benchmark run environment:
 
-✅ 1000 Events (Single Batch): 332.508 ms (0.333 sec)
-✅ 5000 Events (Single Batch): 504.904 ms (0.505 sec)
-✅ Concurrent (5×200 overlap): 155.567 ms (0.156 sec)
+CPU: i5-1240P
 
-This meets and exceeds the requirement:
-1000 events ingested in under 1 second
+RAM: 8 GB
 
-How performance was achieved
+OS: Windows 64-bit
 
-No per-event DB queries
+DB: PostgreSQL (Docker)
 
-Prefetch existing events with event_id IN (...)
+Latest Results (best run)
 
-JDBC batch UPSERT to minimize DB round-trips
+✅ 1000 events: 84.065 ms (0.084 sec), 11896 events/sec
+✅ 5000 events: 343.715 ms (0.344 sec), 14547 events/sec
+✅ Concurrent (5×200 overlap): 88.951 ms (0.089 sec), 11242 events/sec
 
-Atomic conflict resolution inside PostgreSQL
+See full details: BENCHMARK.md
 
-9) Notes
+## Benchmark Screenshots
 
-defectCount = -1 is ignored in defect aggregation queries, as specified in assignment.
+![1000 Events Benchmark](docs/images/benchmark-1000.png)
 
-Dedup/update correctness is enforced at DB level via atomic UPSERT, ensuring thread safety.
+![5000 Events Benchmark](docs/images/benchmark-5000.png)
 
-10) Tests
+![Concurrent Benchmark](docs/images/benchmark-concurrent.png)
 
-Test suite (integration tests with PostgreSQL/Testcontainers) will be added to validate:
+---
 
-validation rules
+## Tests
+
+Integration tests using PostgreSQL/Testcontainers are planned to cover:
+
+validation cases
 
 dedupe/update correctness
 
 query correctness
 
 concurrency safety
-
-
----
-
