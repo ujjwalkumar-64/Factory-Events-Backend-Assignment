@@ -1,7 +1,9 @@
 package com.assignment.buyogo_backend_assignment;
 
 
+import com.assignment.buyogo_backend_assignment.repository.EventRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -22,6 +24,15 @@ public class StatsControllerIntegrationTest extends BaseIntegrationTest {
 
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
+
+    @Autowired
+    private EventRepository eventRepository;
+
+    @BeforeEach
+    void cleanup() {
+        eventRepository.deleteAll();
+    }
+
 
     private Map<String, Object> event(String id, Instant time, int defect, String lineId) {
         return Map.of(
@@ -62,14 +73,14 @@ public class StatsControllerIntegrationTest extends BaseIntegrationTest {
 
     @Test
     void topDefectLinesShouldReturnSorted() throws Exception {
-        Instant start = Instant.now().minusSeconds(3600);
-        Instant end = Instant.now();
+        Instant from = Instant.now().minusSeconds(3600);
+        Instant to = Instant.now();
 
         var payload = List.of(
-                event("T-1", start.plusSeconds(10), 2, "L1"),
-                event("T-2", start.plusSeconds(20), 5, "L2"),
-                event("T-3", start.plusSeconds(30), 1, "L1"),
-                event("T-4", start.plusSeconds(40), -1, "L2")
+                event("T-1", from.plusSeconds(10), 2, "L1"),
+                event("T-2", from.plusSeconds(20), 5, "L2"),
+                event("T-3", from.plusSeconds(30), 1, "L1"),
+                event("T-4", from.plusSeconds(40), -1, "L2")
         );
 
         mockMvc.perform(post("/api/v1/events/batch")
@@ -79,8 +90,8 @@ public class StatsControllerIntegrationTest extends BaseIntegrationTest {
 
         mockMvc.perform(get("/api/v1/stats/top-defect-lines")
                         .param("factoryId", "F01")
-                        .param("start", start.toString())
-                        .param("end", end.toString())
+                        .param("from", from.toString())
+                        .param("to", to.toString())
                         .param("limit", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].lineId").value("L2"))

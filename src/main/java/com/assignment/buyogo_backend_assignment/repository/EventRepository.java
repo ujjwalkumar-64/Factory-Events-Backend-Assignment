@@ -30,15 +30,21 @@ public interface EventRepository extends JpaRepository<Event, Long> {
             @Param("start") Instant start,
             @Param("end") Instant end);
 
-    @Query("SELECT e.lineId as lineId, COALESCE(SUM(e.defectCount), 0) as totalDefects, " +
-            "COUNT(e) as eventCount FROM Event e " +
-            "WHERE e.factoryId = :factoryId AND e.eventTime >= :from AND e.eventTime < :to " +
-            "AND e.defectCount >= 0 AND e.lineId IS NOT NULL " +
-            "GROUP BY e.lineId ORDER BY totalDefects DESC")
+    @Query("""
+            SELECT e.lineId, SUM(e.defectCount), COUNT(e)
+            FROM Event e
+            WHERE e.factoryId = :factoryId
+              AND e.eventTime >= :from AND e.eventTime < :to
+              AND e.defectCount >= 0
+              AND e.lineId IS NOT NULL
+            GROUP BY e.lineId
+            ORDER BY SUM(e.defectCount) DESC
+            """)
     List<Object[]> findTopDefectLinesByFactoryIdAndEventTimeBetween(
             @Param("factoryId") String factoryId,
             @Param("from") Instant from,
             @Param("to") Instant to
     );
+
 
 }
