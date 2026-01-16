@@ -75,12 +75,13 @@ public class StatsServiceImpl implements StatsService {
 
                             : 0.0;
 
-                    return DefectLineResponse.builder()
+                     return DefectLineResponse.builder()
                             .defectsPercent(defectPercentage)
                             .totalDefects(totalDefects)
                             .eventCount(eventsCount)
                             .lineId(lineId)
                             .build();
+
                 })
                 .collect(Collectors.toList());
     }

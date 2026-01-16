@@ -1,6 +1,7 @@
 package com.assignment.buyogo_backend_assignment.controller;
 
 import com.assignment.buyogo_backend_assignment.request.StatsRequest;
+import com.assignment.buyogo_backend_assignment.response.DefectLineResponse;
 import com.assignment.buyogo_backend_assignment.response.StatsResponse;
 import com.assignment.buyogo_backend_assignment.service.StatsService;
 import lombok.AllArgsConstructor;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/stats")
@@ -29,5 +31,16 @@ public class StatsController {
             StatsResponse statsResponse = statsService.getStats(statsRequest);
             return ResponseEntity.ok(statsResponse);
 
+    }
+
+    @GetMapping("/top-defect-lines")
+    public ResponseEntity<List<DefectLineResponse>> getTopDefectLines(
+            @RequestParam String factoryId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to,
+            @RequestParam(defaultValue = "10") int limit
+    ) {
+        List<DefectLineResponse> topLines = statsService.getDefectsLine(factoryId, from, to, limit);
+        return ResponseEntity.ok(topLines);
     }
 }
