@@ -16,15 +16,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 
 @Service
 @RequiredArgsConstructor
 
 public class EventServiceImpl implements EventService {
     private final EventRepository eventRepository;
+
     private static final long MAX_DURATION_MS = 21_600_000L; // 6 hours
     private static final long MAX_FUTURE_MINUTES = 15;
 
@@ -35,78 +34,99 @@ public class EventServiceImpl implements EventService {
         int deduped = 0;
         int updated = 0;
         int rejected = 0;
+
         List<RejectionDetail> rejections = new ArrayList<>();
 
-        for( EventRequest eventRequest : eventRequests  ){
-            try{
-                validateEvent(eventRequest);
-                Instant receivedTime = Instant.now();
-                String payloadHash= EventPayloadHashUtil.computeHash(eventRequest);
+        // Optimization: prefetch existing events in one go (reduces DB calls)
+        Set<String> eventIds = new HashSet<>();
+        for (EventRequest req : eventRequests) {
+            if (req != null && req.eventId() != null) {
+                eventIds.add(req.eventId());
+            }
+        }
 
-                Optional<Event> existingEventCheck = eventRepository.findByEventId(eventRequest.eventId());
-                if(existingEventCheck.isPresent()){
-                     Event existingEvent = existingEventCheck.get();
-                    if(existingEvent.getPayloadHash().equals(payloadHash)){
-                        // same payload i.e duplicate
+        Map<String, Event> existingMap = new HashMap<>();
+        if (!eventIds.isEmpty()) {
+            List<Event> existingEvents = eventRepository.findByEventIdIn(new ArrayList<>(eventIds));
+
+            for (Event e : existingEvents) {
+                existingMap.put(e.getEventId(), e);
+            }
+        }
+
+        for (EventRequest eventRequest : eventRequests) {
+            try {
+                validateEvent(eventRequest);
+
+                Instant receivedTime = Instant.now(); // set by backend
+                String payloadHash = EventPayloadHashUtil.computeHash(eventRequest);
+
+                Event existing = existingMap.get(eventRequest.eventId());
+
+                if (existing == null) {
+                    // Try insert via upsert. If some other thread inserted, this will become dedupe/update correctly.
+                    int affected = eventRepository.upsertEvent(
+                            eventRequest.eventId(),
+                            eventRequest.eventTime(),
+                            receivedTime,
+                            eventRequest.machineId(),
+                            eventRequest.durationMs(),
+                            eventRequest.defectCount(),
+                            eventRequest.factoryId(),
+                            eventRequest.lineId(),
+                            payloadHash
+                    );
+
+                    if (affected == 1) {
+                        // Could be insert or update; since we had no existing in map, treat as accepted
+                        accepted++;
+                    } else {
                         deduped++;
                     }
-                    else{
-                        // different payload of same event
-                        if(receivedTime.isAfter(existingEvent.getReceivedTime())){
-                            updateEvent(existingEvent, eventRequest, receivedTime, payloadHash);
+                } else {
+                    // Existing known -> decide dedupe or update using payloadHash + receivedTime
+                    if (Objects.equals(existing.getPayloadHash(), payloadHash)) {
+                        deduped++;
+                    } else {
+                        // Use DB atomic upsert update rule
+                        int affected = eventRepository.upsertEvent(
+                                eventRequest.eventId(),
+                                eventRequest.eventTime(),
+                                receivedTime,
+                                eventRequest.machineId(),
+                                eventRequest.durationMs(),
+                                eventRequest.defectCount(),
+                                eventRequest.factoryId(),
+                                eventRequest.lineId(),
+                                payloadHash
+                        );
+
+                        if (affected == 1 && receivedTime.isAfter(existing.getReceivedTime())) {
                             updated++;
-                        }
-                        else{
-                            // older event -- so ignore and count deduped
+                            // Update local map to avoid wrong classification later in same batch
+                            existing.setPayloadHash(payloadHash);
+                            existing.setReceivedTime(receivedTime);
+                        } else {
                             deduped++;
                         }
                     }
                 }
-                else{
-                    // new event
-                    Event event=  Event.builder()
-                            .eventId(eventRequest.eventId())
-                            .eventTime(eventRequest.eventTime())
-                            .payloadHash(payloadHash)
-                            .durationMs(eventRequest.durationMs())
-                            .receivedTime(receivedTime)
-                            .machineId(eventRequest.machineId())
-                            .defectCount(eventRequest.defectCount())
-                            .lineId(eventRequest.lineId())
-                            .factoryId(eventRequest.factoryId())
-                            .build();
 
-                    eventRepository.save(event);
-                    accepted++;
-
-
-                }
-
-
-            }
-            catch (ValidationException e){
+            } catch (ValidationException e) {
                 rejected++;
-                rejections.add(RejectionDetail
-                        .builder()
-                                .eventId(eventRequest.eventId())
-                                .reason(e.getMessage())
-                        .build()
-                );
-            }
-            catch (DataIntegrityViolationException e){
-                // Handle race condition where another thread inserted the same eventId
-                deduped++;
-            }
-            catch( Exception e ){
+                rejections.add(RejectionDetail.builder()
+                        .eventId(eventRequest != null ? eventRequest.eventId() : null)
+                        .reason(e.getMessage())
+                        .build());
+            } catch (Exception e) {
                 rejected++;
-                rejections.add(RejectionDetail
-                        .builder()
-                                .eventId(eventRequest.eventId())
-                                .reason(e.getMessage())
-                        .build()
-                );
+                rejections.add(RejectionDetail.builder()
+                        .eventId(eventRequest != null ? eventRequest.eventId() : null)
+                        .reason("Unexpected error: " + e.getMessage())
+                        .build());
             }
         }
+
         return BatchResponse.builder()
                 .accepted(accepted)
                 .deduped(deduped)
@@ -116,34 +136,25 @@ public class EventServiceImpl implements EventService {
                 .build();
     }
 
-    private void validateEvent(EventRequest eventRequest){
+    private void validateEvent(EventRequest eventRequest) {
+        if (eventRequest == null) {
+            throw new ValidationException("event is null");
+        }
 
-        // reject if eventTime is > 15 minutes in the future
-        if(eventRequest.eventTime().isAfter(Instant.now().plus(Duration.ofMinutes(MAX_FUTURE_MINUTES)))){
+        Instant now = Instant.now();
+
+        if (eventRequest.eventTime().isAfter(now.plus(Duration.ofMinutes(MAX_FUTURE_MINUTES)))) {
             throw new ValidationException(
                     String.format("eventTime is more than %d minutes in the future", MAX_FUTURE_MINUTES)
             );
         }
 
-        // reject if durationMs < 0 or durationMs > 6 hours
-        if(eventRequest.durationMs() > MAX_DURATION_MS  || eventRequest.durationMs() <0){
+        long duration = eventRequest.durationMs();
+        if (duration < 0 || duration > MAX_DURATION_MS) {
             throw new ValidationException(
                     String.format("Invalid durationMs: must be between 0 and %d", MAX_DURATION_MS)
             );
         }
-    }
-
-    private void updateEvent(Event existingEvent, EventRequest eventRequest, Instant receivedTime, String payloadHash){
-        existingEvent.setReceivedTime(receivedTime);
-        existingEvent.setPayloadHash(payloadHash);
-        existingEvent.setDurationMs(eventRequest.durationMs());
-        existingEvent.setEventTime(eventRequest.eventTime());
-        existingEvent.setDefectCount(eventRequest.defectCount());
-        existingEvent.setMachineId(eventRequest.machineId());
-        existingEvent.setLineId(eventRequest.lineId());
-        existingEvent.setFactoryId(eventRequest.factoryId());
-        eventRepository.save(existingEvent);
-
     }
 }
 

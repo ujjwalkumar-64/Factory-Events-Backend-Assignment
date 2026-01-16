@@ -10,18 +10,9 @@ spring:
     show-sql: true
     properties:
       hibernate:
-        jdbc:
-          batch_size: 50
-          batch_versioned_data: true
-        order:
-          insert: true
-          update: true
       format_sql: true
 
   datasource:
-    hikari:
-      maximum-pool-size: 20
-      minimum-idle: 5
     url: jdbc:postgresql://localhost:5435/factory
     username: factory_user
     password: factory_pass

@@ -15,8 +15,6 @@ public record EventRequest(
          @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'" , timezone = "UTC")
          Instant eventTime,
 
-         @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'" , timezone = "UTC")
-         Instant receivedTime,
 
          @NotBlank(message = "machine id is required")
          String machineId,
